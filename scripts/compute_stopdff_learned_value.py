@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -360,6 +361,7 @@ def _load_ensemble(
     payload_seeds: list[int] = []
     checkpoint_sha256s: dict[str, str] = {}
     checkpoint_producer_commits: set[str] = set()
+    training_partitions: set[tuple[str, str, str]] = set()
 
     for path in checkpoint_paths:
         from scripts._common import sha256_file
@@ -378,6 +380,14 @@ def _load_ensemble(
                 raise ValueError(f"checkpoint {path} missing required key {key!r}")
         if "reward_schedule" not in payload:
             raise ValueError(f"checkpoint {path} missing required key 'reward_schedule'")
+
+        # The trainer records the actual fit and selection inputs in each checkpoint.
+        training = payload["config"].get("training", {})
+        if "data_dir" in training:
+            training_partitions.add((
+                training["data_dir"], training.get("train_split", "train"),
+                training.get("val_split", "val"),
+            ))
 
         schema = dict(payload["feature_schema"])
         scaler = dict(payload["scaler"])
@@ -443,6 +453,7 @@ def _load_ensemble(
         "checkpoint_reward_schedules": sorted(reward_schedules),
         "checkpoint_sha256s": checkpoint_sha256s,
         "checkpoint_producer_commits": sorted(checkpoint_producer_commits),
+        "training_partitions": sorted(training_partitions),
         "reward_schedule": reward_schedule,
         "device": str(device),
         "train_losses": train_losses,
@@ -971,6 +982,7 @@ def _load_eval_dataframe(
     args: argparse.Namespace,
     *,
     artifact_dir: Path,
+    training_partitions: Sequence[tuple[str, str, str]] = (),
 ) -> tuple[
     pd.DataFrame,
     dict[str, Any] | None,
@@ -988,10 +1000,20 @@ def _load_eval_dataframe(
     from scripts.stopdff_dp.adapter import build_dataframe
 
     data_dir = _resolve_path(args.data_dir)
-    from qb_data.data_audit import require_clean_split_directory
-    require_clean_split_directory(data_dir)
+    from qb_data.data_audit import require_metric_splits
     mc_path = data_dir / "mc_dataset.json"
     eval_path = data_dir / f"{args.eval_split}_dataset.json"
+    if training_partitions:
+        for training_dir, train, val in training_partitions:
+            fit_dir = _resolve_path(training_dir)
+            # Native checkpoints use absolute training paths. A moved corpus
+            # can be replayed with its recorded split names under --data-dir.
+            if not fit_dir.is_dir():
+                fit_dir = data_dir
+            require_metric_splits(data_dir, train=fit_dir / f"{train}_dataset.json",
+                                  val=fit_dir / f"{val}_dataset.json", test=eval_path)
+    else:
+        require_metric_splits(data_dir, test=eval_path)
     for path in (mc_path, eval_path):
         if not path.exists():
             raise FileNotFoundError(f"missing dataset {path}")
@@ -1152,7 +1174,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     schedule = get_schedule(checkpoint_metadata["reward_schedule"])
     target_bounds = _target_bounds(schedule)
     eval_df, mc_coverage, mc_retention, mc_build, calibration_path = _load_eval_dataframe(
-        args, artifact_dir=artifact_dir
+        args, artifact_dir=artifact_dir,
+        training_partitions=checkpoint_metadata.get("training_partitions", ()),
     )
     generation = _generation_provenance(
         args=args,

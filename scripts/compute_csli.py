@@ -1510,12 +1510,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     # texts (replacing the prior folklore "most dissimilar = most
     # specific" heuristic). The path follows --data-dir so the prior
     # is loaded from the same partition as the test split being scored.
-    from qb_data.data_audit import require_clean_split_directory
-    try:
-        require_clean_split_directory(data_dir)
-    except (OSError, ValueError, TypeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
     _set_answer_prior_train_path(data_dir / "train_dataset.json")
 
     # Load MC dataset (has options and gold_index)

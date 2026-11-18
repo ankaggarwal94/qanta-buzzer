@@ -161,6 +161,26 @@ def require_clean_split_directory(data_dir: str | Path, **selected: Path) -> Non
         _check_report(audit_split_files(present))
 
 
+def require_metric_splits(data_dir: Path, **selected: Path) -> None:
+    """Check the files a metric actually uses and any available canonical peers."""
+    for path in selected.values():
+        if path.name == "mc_dataset.json":
+            raise ValueError("The combined MC dataset cannot be used as a metric split")
+        if not path.is_file():
+            raise FileNotFoundError(f"missing dataset {path}")
+    paths = dict(selected)
+    active = {path.resolve() for path in selected.values()}
+    for name in ("train", "val", "test"):
+        peer = data_dir / f"{name}_dataset.json"
+        if name not in paths and peer.is_file() and peer.resolve() not in active:
+            paths[name] = peer
+    report = audit_split_files(paths)
+    _check_report(report)
+    for name in selected:
+        if report["sources"][name]["rows"] == 0:
+            raise ValueError(f"Selected {name} dataset is empty: {paths[name]}")
+
+
 def validate_question_splits(**splits: Sequence) -> None:
     """Check the effective partitions when their sources span different directories."""
     def records(questions):

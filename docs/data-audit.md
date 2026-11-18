@@ -17,6 +17,17 @@ Inspect `split_integrity.cross_split_text_groups` for the affected groups. The c
 
 A finding in historical files applies to those specific inputs. To obtain metrics on disjoint splits, resolve any label conflicts, rebuild the splits into a fresh directory, and rerun the affected training and evaluation against that directory.
 
+## Run paper metrics on a new dataset
+
+Use the preflight entry point to run CSLI, prefix calibration, StopDFF, or StopDFF DP on new inputs. The metric's own parser supplies its default data directory, fit split, and evaluation split. Place its usual options after the metric name. Point outputs to a new directory when you want to keep historical results.
+
+```console
+python scripts/run_audited_metric.py compute_csli --data-dir artifacts/main --models tfidf --output artifacts/main/csli.json
+python scripts/run_audited_metric.py compute_stopdff_dp --data-dir artifacts/main --fit-split fold_a --split fold_b --out artifacts/main/dp.json --out-md artifacts/main/dp.md --out-tex artifacts/main/dp.tex
+```
+
+The preflight checks the complete selected files and available canonical peers before passing control to the metric, including on smoke runs. The four original producer scripts remain available for replaying the hash-bound paper release. Invoking those scripts directly uses their historical validation behavior. The current learned-value trainer, learned-value evaluator, and DP sweep check their effective split inputs directly. For checkpoints that record the training directory and split names, learned-value evaluation checks the recorded cohorts against the selected evaluation split. When a training directory has moved, provide the recorded split files in the evaluation data directory.
+
 ## Raw CSV, QANTA and QBReader exports
 
 ```console

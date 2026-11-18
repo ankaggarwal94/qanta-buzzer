@@ -67,7 +67,12 @@ def test_legacy_compute_rejects_train_test_text_copy_before_smoke_scoring(
         elif consumer == "compute_stopdff":
             args += ["--report-output", str(tmp_path / "report.json")]
 
-    assert module.main(args) != 0
+    if consumer == "sweep_stopdff_dp":
+        code = module.main(args)
+    else:
+        from scripts.run_audited_metric import main
+        code = main([consumer, *args])
+    assert code != 0
     assert not scoring_calls
     if consumer == "sweep_stopdff_dp":
         payload = json.loads(output.read_text(encoding="utf-8"))
