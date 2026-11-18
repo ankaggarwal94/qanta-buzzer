@@ -227,6 +227,13 @@ def flatten_config(config: dict) -> dict:
     return flat
 
 
+def _read_questions(path: Path, config: dict) -> list:
+    if config.get("supervised", {}).get("input_mode") == "prefixes":
+        from scripts._stopping_inputs import parse_stopping_questions
+        return parse_stopping_questions(path.read_bytes(), path)
+    return load_mc_questions(path)
+
+
 def load_questions(
     args: argparse.Namespace,
     config: dict,
@@ -265,7 +272,7 @@ def load_questions(
 
     data_audit.require_clean_split_directory(mc_path.parent)
     print(f"Loading MC questions from: {mc_path}")
-    questions = load_mc_questions(mc_path)
+    questions = _read_questions(mc_path, config)
     print(f"Loaded {len(questions)} questions")
 
     # Apply max_questions limit when falling back to a combined dataset.
@@ -429,15 +436,15 @@ def load_question_splits_with_metadata(
         if split_paths is None:
             continue
         data_audit.require_clean_split_directory(base_dir)
-        train_questions = load_mc_questions(split_paths["train"])
+        train_questions = _read_questions(split_paths["train"], config)
         if not train_questions:
             print(
                 f"Warning: persisted train split at {split_paths['train']} "
                 "is empty; skipping this candidate and trying next."
             )
             continue
-        val_questions = load_mc_questions(split_paths["val"])
-        test_questions = load_mc_questions(split_paths["test"])
+        val_questions = _read_questions(split_paths["val"], config)
+        test_questions = _read_questions(split_paths["test"], config)
         cap_was_applied = bool(max_questions)
         if cap_was_applied:
             train_questions, val_questions, test_questions = _apply_max_questions(

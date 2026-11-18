@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -23,9 +22,10 @@ from qb_data.data_audit import validate_question_splits
 from qb_data.mc_builder import validate_gold_option, validate_reveal_grid
 from qb_env.tossup_env import make_env_from_config
 from scripts._common import (
-    build_likelihood_model, collect_env_texts, load_config, mc_questions_from_payload,
+    build_likelihood_model, collect_env_texts, load_config,
     parse_overrides, save_json,
 )
+from scripts._stopping_inputs import parse_stopping_questions
 from training.stopping_data import ReplayEnv, collect_episodes, evaluate_actions
 
 METHODS = ("threshold", "final_buzz", "wait_to_horizon", "fitted_value",
@@ -125,7 +125,7 @@ def run(args, output):
     questions, sources = {}, {}
     for split, path in paths.items():
         raw = path.read_bytes()
-        rows = mc_questions_from_payload(json.loads(raw), path)
+        rows = parse_stopping_questions(raw, path)
         if not rows:
             raise ValueError(f"Empty {split} split")
         questions[split] = rows

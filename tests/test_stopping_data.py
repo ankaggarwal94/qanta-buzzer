@@ -3,9 +3,11 @@
 import numpy as np
 import pytest
 from dataclasses import asdict, replace
+import json
+from pathlib import Path
 
 from qb_data.mc_builder import validate_gold_option, validate_reveal_grid
-from scripts._common import mc_question_from_dict
+from scripts._stopping_inputs import parse_stopping_questions
 from qb_env.stop_only_env import StopOnlyEnv
 from training.stopping_data import collect_episodes, evaluate_actions, ReplayEnv
 
@@ -72,7 +74,8 @@ def test_reveal_boundaries_are_bound_to_source_words(sample_mc_question):
 @pytest.mark.parametrize("bad", [True, 0.5])
 def test_deserialization_rejects_lossy_gold_coercion(sample_mc_question, bad):
     with pytest.raises(ValueError, match="gold_index"):
-        mc_question_from_dict({**asdict(sample_mc_question), "gold_index": bad})
+        raw = json.dumps([{**asdict(sample_mc_question), "gold_index": bad}]).encode()
+        parse_stopping_questions(raw, Path("train_dataset.json"))
 
 
 def test_shifted_menu_key_cannot_train_or_score(sample_mc_question):
