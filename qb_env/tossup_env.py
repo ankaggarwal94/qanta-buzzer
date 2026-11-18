@@ -36,21 +36,26 @@ from qb_env.acl_schedule import ScheduleCache
 from qb_env.acl_settlement import TransitionValidator, settle_reward
 
 
-def _score_belief(
+def _score_clue(
     question: MCQuestion, step_idx: int, likelihood_model: LikelihoodModel,
-    belief_mode: str, beta: float, prior: np.ndarray,
+    belief_mode: str,
 ) -> np.ndarray:
-    """Score one visible prefix using the same update for rollout and precomputation."""
+    """Score the cumulative prefix or the newly revealed fragment for this step."""
     if belief_mode == "from_scratch":
-        scores = likelihood_model.score(question.cumulative_prefixes[step_idx], question.option_profiles)
-        return softmax_belief(scores, beta)
-    if belief_mode == "sequential_bayes":
+        clue = question.cumulative_prefixes[step_idx]
+    elif belief_mode == "sequential_bayes":
         start = question.run_indices[step_idx - 1] + 1 if step_idx else 0
         stop = question.run_indices[step_idx] + 1
-        fragment = " ".join(question.tokens[start:stop])
-        scores = likelihood_model.score(fragment, question.option_profiles)
-        return bayesian_update(prior, scores, beta)
-    raise ValueError(f"Unknown belief_mode: {belief_mode}")
+        clue = " ".join(question.tokens[start:stop])
+    else:
+        raise ValueError(f"Unknown belief_mode: {belief_mode}")
+    return likelihood_model.score(clue, question.option_profiles)
+
+
+def _belief_from_scores(scores: np.ndarray, belief_mode: str, beta: float, prior: np.ndarray) -> np.ndarray:
+    if belief_mode == "from_scratch":
+        return softmax_belief(scores, beta)
+    return bayesian_update(prior, scores, beta)
 
 
 def precompute_beliefs(
@@ -95,7 +100,8 @@ def precompute_beliefs(
         belief = np.ones(q_k, dtype=np.float32) / q_k
 
         for step_idx in range(num_steps):
-            belief = _score_belief(question, step_idx, likelihood_model, belief_mode, beta, belief)
+            scores = _score_clue(question, step_idx, likelihood_model, belief_mode)
+            belief = _belief_from_scores(scores, belief_mode, beta, belief)
             cache[(q_idx, step_idx)] = belief.copy()
 
     return cache
@@ -355,9 +361,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             key = (self._current_question_idx, step_idx)
             return self.precomputed_beliefs[key].copy()
 
-        return _score_belief(
-            question, step_idx, self.likelihood_model, self.belief_mode, self.beta, self.belief
-        )
+        # The mode selects this clue. An adaptive scorer may then change the temperature or prior.
+        mode = self.belief_mode
+        scores = _score_clue(question, step_idx, self.likelihood_model, mode)
+        return _belief_from_scores(scores, mode, self.beta, self.belief)
 
     def _obs(self) -> np.ndarray:
         """Build the observation vector from current belief state.

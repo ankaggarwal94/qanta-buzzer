@@ -126,10 +126,9 @@ class _RewardAtBuzz(Protocol):
 
 def _threshold_episode(
     result_type: type[_Result],
+    question: MCQuestion | _PrecomputedQuestion,
     beliefs: Iterable[np.ndarray],
     *,
-    qid: str,
-    gold_index: int,
     step_count: Callable[[], int],
     reached: Callable[[float], bool],
     confidence: Callable[[float], float],
@@ -145,19 +144,19 @@ def _threshold_episode(
     for step, belief in enumerate(beliefs):
         top_idx, top_p, entropy = belief_stats(belief)
         c_trace.append(confidence(top_p))
-        g_trace.append(float(top_idx == gold_index))
+        g_trace.append(float(top_idx == question.gold_index))
         top_p_trace.append(top_p)
         entropy_trace.append(entropy)
         if reached(top_p) or step == step_count() - 1:
             chosen_step, chosen_idx = step, top_idx
             break
 
-    correct = chosen_idx == gold_index
+    correct = chosen_idx == question.gold_index
     return result_type(
-        qid=qid,
+        qid=question.qid,
         buzz_step=chosen_step,
         buzz_index=chosen_idx,
-        gold_index=gold_index,
+        gold_index=question.gold_index,
         correct=correct,
         reward_like=reward(correct=correct, buzz_step=chosen_step, total_steps=step_count()),
         c_trace=c_trace,
@@ -209,7 +208,7 @@ class _ThresholdPolicy:
         confidence: Callable[[float], float],
     ) -> _Result:
         return _threshold_episode(
-            result_type, beliefs, qid=question.qid, gold_index=question.gold_index,
+            result_type, question, beliefs,
             step_count=lambda: len(question.cumulative_prefixes),
             reached=lambda p: p >= self.threshold, confidence=confidence,
             reward=self._reward_at_buzz,
@@ -309,8 +308,7 @@ def _cached_threshold_episode(
     early_buzz_penalty: float = 0.0,
 ) -> _Result:
     return _threshold_episode(
-        result_type, pq.beliefs,
-        qid=pq.qid, gold_index=pq.gold_index, step_count=lambda: len(pq.beliefs),
+        result_type, pq, pq.beliefs, step_count=lambda: len(pq.beliefs),
         reached=lambda p: p >= threshold,
         confidence=partial(confidence_proxy, threshold=threshold, alpha=alpha),
         reward=partial(

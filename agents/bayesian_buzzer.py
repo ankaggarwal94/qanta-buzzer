@@ -80,10 +80,9 @@ class SequentialBayesBuzzer(_ThresholdPolicy):
 
 def _clue_fragments(question: MCQuestion) -> Iterator[str]:
     """Yield just the newly revealed tokens for sequential Bayesian updates."""
-    start = 0
-    for index in question.run_indices:
+    for step, index in enumerate(question.run_indices):
+        start = question.run_indices[step - 1] + 1 if step else 0
         yield " ".join(question.tokens[start:index + 1])
-        start = index + 1
 
 
 def precompute_sequential_beliefs(

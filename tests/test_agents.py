@@ -1197,6 +1197,55 @@ def test_live_threshold_policies_observe_horizon_changes(
     assert len(result.c_trace) == 1
 
 
+@pytest.mark.parametrize("policy", [ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer])
+def test_live_episode_uses_question_metadata_updated_by_scorer(sample_mc_question, policy):
+    question = sample_mc_question
+    question.cumulative_prefixes = question.cumulative_prefixes[:2]
+    question.run_indices = question.run_indices[:2]
+
+    class RelabelingScorer:
+        def score(self, clue, profiles):
+            if clue != "Who":
+                question.qid = "corrected"
+                question.gold_index = 1
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    result = policy(RelabelingScorer(), threshold=2.0, reward_mode="simple").run_episode(question)
+    assert result.qid == "corrected"
+    assert result.g_trace == [0.0, 1.0]
+    assert result.gold_index == result.buzz_index == 1
+    assert result.correct and result.reward_like == 1.0
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["live", "sweep"])
+def test_sequential_episode_uses_revised_clue_boundary(sample_mc_question, cached):
+    from agents import sweep_sequential_thresholds
+
+    question = sample_mc_question
+    question.run_indices = [1, 3]
+    question.cumulative_prefixes = ["Who was", "Who was the first"]
+    fragments = []
+
+    class RevisingScorer:
+        def score(self, clue, profiles):
+            fragments.append(clue)
+            if len(fragments) == 1:
+                question.run_indices[0] = 0
+                return np.zeros(4)
+            if clue.startswith("was "):
+                return np.array([1.0, 0.0, 0.0, 0.0])
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    if cached:
+        sweep = sweep_sequential_thresholds([question], RevisingScorer(), [2.0], reward_mode="simple")
+        result = sweep[2.0][0]
+    else:
+        policy = SequentialBayesBuzzer(RevisingScorer(), threshold=2.0, reward_mode="simple")
+        result = policy.run_episode(question)
+    assert fragments == ["Who was", "was the first"]
+    assert result.buzz_index == 0 and result.correct and result.reward_like == 1.0
+
+
 def test_profile_policy_observes_horizon_changed_by_confidence(sample_mc_question, sample_corpus):
     class ShorteningPolicy(SoftmaxProfileBuzzer):
         def confidence_proxy(self, top_p):

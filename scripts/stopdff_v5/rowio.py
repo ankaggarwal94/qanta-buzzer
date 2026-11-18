@@ -41,14 +41,34 @@ def _write_rows(handle: BinaryIO, rows: Iterable[dict]) -> None:
 
 
 def dumps_rows(rows: Iterable[dict]) -> bytes:
-    """Return the deterministic gzip representation of a single pass over rows."""
+    """Encode adapter rows as deterministic gzipped JSON Lines.
+
+    Parameters
+    ----------
+    rows : Iterable[dict]
+        Row objects in output order, consumed once.
+
+    Returns
+    -------
+    bytes
+        Compressed UTF-8 JSON Lines with sorted keys and a fixed gzip timestamp.
+    """
     with io.BytesIO() as buf:
         _write_rows(buf, rows)
         return buf.getvalue()
 
 
 def write_jsonl_gz(path: str | Path, rows: Iterable[dict]) -> None:
-    """Stream canonical rows into a durably published gzip file."""
+    """Stream deterministic gzipped JSON Lines to an atomically replaced file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Destination published after all rows serialize successfully. A row
+        serialization failure preserves any existing destination.
+    rows : Iterable[dict]
+        Row objects in output order, consumed once.
+    """
     with atomic_binary_writer(Path(path)) as handle:
         _write_rows(handle, rows)
 

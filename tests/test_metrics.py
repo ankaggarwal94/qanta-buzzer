@@ -560,9 +560,15 @@ def test_summary_reads_slotted_trace_without_copying_opaque_metadata():
     assert summarize_buzz_metrics([trace])["mean_sq"] == 0.75
 
 
-def test_system_score_rejects_broadcast_between_different_step_counts():
-    with pytest.raises(ValueError, match="aligned"):
-        system_score([0.25, 0.5], [1.0])
+@pytest.mark.parametrize(("hazards", "gains"), [
+    ([0.25, 0.5], [1.0]),
+    ([[0.25], [0.5]], [[1.0], [0.0]]),
+    ([[0.25], [0.5]], [1.0, 0.0]),
+    ([0.25, 0.5], [[1.0], [0.0]]),
+])
+def test_system_score_requires_aligned_vectors(hazards, gains):
+    with pytest.raises(ValueError, match="aligned one-dimensional"):
+        system_score(hazards, gains)
 
 
 def test_stopping_scores_match_exact_backward_expectation():

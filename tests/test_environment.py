@@ -505,6 +505,25 @@ class TestRewardModes:
 class TestLikelihoodPluggability:
     """Tests for interchangeable likelihood models."""
 
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [("from_scratch", [0.25] * 4), ("sequential_bayes", [0.7, 0.1, 0.1, 0.1])],
+    )
+    def test_wait_uses_belief_parameters_updated_by_scorer(self, sample_mc_question, mode, expected):
+        class AdaptiveScorer:
+            def score(self, clue, profiles):
+                env.beta = 0.0
+                env.belief = np.array([0.7, 0.1, 0.1, 0.1], dtype=np.float32)
+                # A mode change applies to the next clue.
+                env.belief_mode = "sequential_bayes" if mode == "from_scratch" else "from_scratch"
+                return np.array([2.0, 0.0, 0.0, 0.0])
+
+        env = TossupMCEnv([sample_mc_question], AdaptiveScorer(), belief_mode=mode, beta=1.0)
+        env.reset(options={"question_idx": 0})
+        obs, *_ = env.step(0)
+        np.testing.assert_allclose(env.belief, expected)
+        np.testing.assert_allclose(obs[:4], expected)
+
     def test_tfidf_model_produces_valid_obs(
         self, sample_mc_question: MCQuestion
     ) -> None:

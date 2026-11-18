@@ -81,9 +81,12 @@ def test_malformed_embedding_batch_is_rejected_before_cache_update(monkeypatch, 
 
 def test_tfidf_refit_updates_the_vocabulary_and_cached_coordinates():
     model = TfIdfLikelihood(["apple banana", "cherry date"])
+    previous = model.vectorizer
     model.embed_and_cache(["banana", "apple"])
     corpus = ["zebra banana", "cherry", "yarrow", "zebra", "lemon"]
     model.fit(corpus)
+    assert "lemon" in model.vectorizer.vocabulary_
+    assert "lemon" not in previous.vocabulary_
     reference = TfIdfLikelihood(corpus)
     texts = ["banana", "apple", "lemon"]
     np.testing.assert_array_equal(model.embed_and_cache(texts), reference.embed_and_cache(texts))
@@ -94,8 +97,10 @@ def test_failed_tfidf_refit_retains_last_working_model():
     corpus = ["apple banana", "cherry date"]
     model = TfIdfLikelihood(corpus)
     model.embed_and_cache(["banana"])
+    key, warm_row = next(iter(model.embedding_cache.items()))
     with pytest.raises(ValueError, match="empty vocabulary"):
         model.fit(["the"])
+    assert model.embedding_cache[key] is warm_row
     scores = model.score("apple banana", ["banana", "date"])
     np.testing.assert_array_equal(scores, TfIdfLikelihood(corpus).score("apple banana", ["banana", "date"]))
 
@@ -106,6 +111,30 @@ class _LocalEmbeddings(LikelihoodModel):
 
     def score(self, clue_prefix, option_profiles):
         return self.embed_and_cache(option_profiles) @ self.embed_and_cache([clue_prefix])[0]
+
+
+def test_bulk_precompute_encodes_each_batch_before_scanning_further(monkeypatch):
+    from models import likelihoods
+
+    model = _LocalEmbeddings()
+    model.embed_and_cache(["warm"])
+    original_key = likelihoods._text_key
+    original_embed = model._embed_batch
+    batches = []
+
+    def key(text):
+        if text == "third":
+            assert batches == [["first", "second"]]
+        return original_key(text)
+
+    def embed(texts):
+        batches.append(texts)
+        return original_embed(texts)
+
+    monkeypatch.setattr(likelihoods, "_text_key", key)
+    monkeypatch.setattr(model, "_embed_batch", embed)
+    model.precompute_embeddings(["warm", "first", "first", "second", "first", "third"], batch_size=2)
+    assert batches == [["first", "second"], ["third"]]
 
 
 def test_bulk_precompute_releases_hashes_for_warm_entries():
@@ -167,6 +196,47 @@ def test_unknown_width_mismatch_names_cache_recovery(tmp_path):
     with pytest.raises(ValueError, match="rebuild"):
         model.embed_and_cache(["fresh"])
     assert list(model.embedding_cache) == [_text_key("old")]
+
+
+def test_first_batch_must_match_encoder_width_before_publishing(monkeypatch):
+    model = T5Likelihood.__new__(T5Likelihood)
+    LikelihoodModel.__init__(model)
+    model.encoder = SimpleNamespace(config=SimpleNamespace(d_model=2))
+    monkeypatch.setattr(model, "_embed_batch", lambda texts: np.ones((len(texts), 3)))
+    with pytest.raises(ValueError, match="width"):
+        model.precompute_embeddings(["fresh", "other"])
+    assert not model.embedding_cache
+
+    monkeypatch.setattr(model, "_embed_batch", _LocalEmbeddings()._embed_batch)
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh", "other"]), [[5, 1], [5, 1]])
+
+
+def test_incompatible_archive_releases_decoded_rows_as_it_validates(tmp_path, monkeypatch):
+    from weakref import WeakValueDictionary
+
+    model = _LocalEmbeddings()
+    monkeypatch.setattr(model, "_embedding_width", lambda: 2)
+    path = tmp_path / "stale.npz"
+    rows = {str(i): np.ones(3, dtype=np.float32) for i in range(32)}
+    np.savez_compressed(path, **rows)
+    with np.load(path) as archive:
+        archive_class = type(archive)
+    read_row = archive_class.__getitem__
+    live_rows = WeakValueDictionary()
+    counts = []
+
+    def read(archive, key):
+        row = read_row(archive, key)
+        live_rows[key] = row
+        counts.append(len(live_rows))
+        return row
+
+    monkeypatch.setattr(archive_class, "__getitem__", read)
+    with pytest.warns(RuntimeWarning, match="width"):
+        assert model.load_cache(path) == 0
+    assert len(counts) == len(rows)
+    assert max(counts) <= 2  # Current row and the preceding loop iteration.
+    assert not model.embedding_cache
 
 
 @pytest.mark.parametrize("warm", [False, True])

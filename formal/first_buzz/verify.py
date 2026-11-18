@@ -15,7 +15,24 @@ def git(repo: Path, *args: str) -> bytes:
 
 
 def stage_project(repo: Path, revision: str, freeze_sha256: str, project: Path) -> None:
-    """Read only committed blobs and materialize the inputs in a fresh directory."""
+    """Stage the committed proof and its reviewed comparison project.
+
+    Parameters
+    ----------
+    repo : Path
+        Git repository containing the challenge and submitted proof.
+    revision : str
+        Full Git commit object ID from which to read every input.
+    freeze_sha256 : str
+        Independently reviewed SHA-256 digest of the challenge manifest.
+    project : Path
+        Empty or new directory to receive the verified inputs and proof.
+
+    Raises
+    ------
+    ValueError
+        If the commit, manifest, frozen files, or destination fail validation.
+    """
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision):
         raise ValueError("supply a full commit object ID")
     if git(repo, "cat-file", "-t", revision).strip() != b"commit":
@@ -48,6 +65,20 @@ def stage_project(repo: Path, revision: str, freeze_sha256: str, project: Path) 
 
 
 def compare(project: Path) -> None:
+    """Run the frozen FirstBuzz comparison using the pinned Lean toolchain.
+
+    Parameters
+    ----------
+    project : Path
+        Directory populated by `stage_project`, including the comparator config.
+
+    Raises
+    ------
+    ValueError
+        If the sandbox is overridden or Lake reports an unexpected Lean version.
+    subprocess.CalledProcessError
+        If Lake fails to report its version or the proof comparison fails.
+    """
     if "COMPARATOR_BWRAP" in os.environ:
         raise ValueError("the default Lake bubblewrap sandbox is required")
     version = subprocess.check_output(["lake", "--version"], cwd=project, text=True).strip()
