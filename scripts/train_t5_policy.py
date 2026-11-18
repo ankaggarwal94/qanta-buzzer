@@ -486,6 +486,12 @@ def load_question_splits_with_metadata(
 
     questions, combined_path = load_questions(args, config, return_path=True)
     train_questions, val_questions, test_questions = split_questions(questions, config)
+    if not (train_questions and val_questions and test_questions):
+        raise ValueError(
+            "Grouped T5 splitting requires non-empty training, validation and test cohorts. "
+            f"Got train={len(train_questions)}, val={len(val_questions)}, test={len(test_questions)}. "
+            "Use more distinct questions, raise data.max_questions, or adjust the split ratios."
+        )
     manifest = _build_split_manifest(
         source="random_split_fallback",
         mc_path=str(combined_path),
