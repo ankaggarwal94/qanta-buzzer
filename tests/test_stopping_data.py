@@ -78,3 +78,11 @@ def test_deserialization_rejects_lossy_gold_coercion(sample_mc_question, bad):
 def test_shifted_menu_key_cannot_train_or_score(sample_mc_question):
     with pytest.raises(ValueError, match="gold_index"):
         validate_gold_option(replace(sample_mc_question, gold_index=1))
+
+
+def test_visible_menu_must_display_the_gold_answer_at_its_key(sample_mc_question):
+    moved = list(reversed(sample_mc_question.options))
+    with pytest.raises(ValueError, match="displayed"):
+        validate_gold_option(replace(sample_mc_question, options=moved))
+    aliased = ["Washington", *sample_mc_question.options[1:]]
+    validate_gold_option(replace(sample_mc_question, options=aliased))

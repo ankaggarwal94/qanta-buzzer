@@ -85,6 +85,11 @@ def validate_gold_option(question: MCQuestion) -> None:
             or len(question.option_answer_primary) != count
             or question.option_answer_primary[i] != question.answer_primary):
         raise ValueError(f"{question.qid}: gold_index does not identify the source answer")
+    displayed = question.options[i]
+    if displayed != question.answer_primary:
+        aliases = {normalize_answer(s) for s in [question.answer_primary, *question.clean_answers]}
+        if not isinstance(displayed, str) or not displayed.strip() or normalize_answer(displayed) not in aliases:
+            raise ValueError(f"{question.qid}: displayed gold option differs from the source answer")
 
 
 def validate_reveal_grid(question: MCQuestion) -> None:
