@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import yaml
 
+from qb_data import data_audit
 from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
@@ -254,7 +255,7 @@ def load_questions(
                 print(f"  {c}")
             sys.exit(1)
 
-    require_clean_split_directory(mc_path.parent)
+    data_audit.require_clean_split_directory(mc_path.parent)
     print(f"Loading MC questions from: {mc_path}")
     questions = load_mc_questions(mc_path)
     print(f"Loaded {len(questions)} questions")
@@ -420,9 +421,7 @@ def load_question_splits_with_metadata(
         split_paths = resolve_persisted_split_paths(base_dir)
         if split_paths is None:
             continue
-        from qb_data.data_audit import require_clean_split_directory
-
-        require_clean_split_directory(base_dir)
+        data_audit.require_clean_split_directory(base_dir)
         train_questions = load_mc_questions(split_paths["train"])
         if not train_questions:
             print(

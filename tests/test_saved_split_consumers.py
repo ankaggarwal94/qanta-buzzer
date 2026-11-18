@@ -174,3 +174,22 @@ def test_manifest_caps_cannot_hide_a_copy_in_an_external_split_directory(tmp_pat
     (checkpoint / "split_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="question-text overlap"):
         _check_saved_split_paths(checkpoint, artifacts)
+
+
+def test_t5_combined_loader_checks_available_siblings_before_loading(tmp_path, sample_mc_question):
+    from argparse import Namespace
+    from dataclasses import asdict
+
+    from scripts.train_t5_policy import load_questions
+
+    row = asdict(sample_mc_question)
+    combined = tmp_path / "mc_dataset.json"
+    combined.write_text(json.dumps([row]), encoding="utf-8")
+    args = Namespace(mc_path=str(combined), smoke=False)
+    assert [q.qid for q in load_questions(args, {})] == [row["qid"]]
+
+    for split in ("train", "test"):
+        path = tmp_path / f"{split}_dataset.json"
+        path.write_text(json.dumps([{**row, "qid": split}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="question-text overlap"):
+        load_questions(args, {})
