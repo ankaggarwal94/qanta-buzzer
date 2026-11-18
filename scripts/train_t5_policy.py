@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import yaml
 
 from qb_data.config import merge_overrides
+from training.checkpoints import training_lock
 from scripts._common import (
     ARTIFACT_DIR,
     PROCESSED_DIR,
@@ -338,8 +339,7 @@ def _apply_max_questions(
         # behaviour assigned ``[]`` to one or more splits, producing a
         # split-aware-looking run with zero held-out coverage; downstream
         # evaluation then reports zero-everything metrics indistinguishable
-        # from a legitimate 0% test score (or, in smoke mode with
-        # ``iterations < eval_interval``, no PPO checkpoint at all).
+        # from a legitimate 0% test score.
         non_empty_names = [name for name, _ in non_empty]
         raise ValueError(
             f"max_questions={max_q} with scope='global' is smaller than the "
@@ -553,6 +553,14 @@ def split_questions(questions: list, config: dict) -> tuple:
     return train_questions, val_questions, test_questions
 
 
+def _current_best_checkpoint(trainer: Any) -> Path:
+    """Return the checkpoint successfully saved by this training invocation."""
+    path = trainer.best_checkpoint_path
+    if path is None or not path.is_dir():
+        raise RuntimeError("Training did not save a fresh best checkpoint; refusing to use the checkpoint")
+    return path
+
+
 def main() -> None:
     """Run the full T5 policy training pipeline."""
     args = parse_args()
@@ -564,7 +572,11 @@ def main() -> None:
     if overrides:
         config = merge_overrides(config, overrides)
     flat_config = flatten_config(config)
+    with training_lock(flat_config["checkpoint_dir"]):
+        _train_policy(args, config, flat_config)
 
+
+def _train_policy(args: argparse.Namespace, config: dict, flat_config: dict) -> None:
     # Load canonical split artifacts when they exist, otherwise fall back to
     # the legacy combined-dataset random split.
     train_questions, val_questions, test_questions, split_manifest = (
@@ -574,6 +586,18 @@ def main() -> None:
     # Import training modules (lazy to avoid loading transformers until needed)
     from training.train_supervised_t5 import run_supervised_training
     from training.train_ppo_t5 import run_ppo_training
+
+    # ``copy.deepcopy`` preserves tuples and other types that
+    # ``yaml.safe_load(yaml.safe_dump(...))`` would coerce to lists; the
+    # snapshot is solely to freeze a config object before mutating it.
+    resolved_config = copy.deepcopy(config)
+    resolved_config.setdefault("model", {})
+    resolved_config["model"]["device"] = flat_config["device"]
+    resolved_config["model"]["num_choices"] = flat_config["num_choices"]
+
+    def write_checkpoint_sidecars(checkpoint: Path) -> None:
+        save_json(checkpoint / "config_used.json", resolved_config)
+        save_json(checkpoint / "split_manifest.json", split_manifest)
 
     # Phase 1: Supervised warm-start (optional)
     supervised_model_path = None
@@ -586,10 +610,10 @@ def main() -> None:
             config=flat_config,
             train_questions=train_questions,
             val_questions=val_questions,
+            write_checkpoint_sidecars=write_checkpoint_sidecars,
         )
-        supervised_model_path = str(
-            trainer.checkpoint_dir / "best_model"
-        )
+        supervised_checkpoint = _current_best_checkpoint(trainer)
+        supervised_model_path = str(supervised_checkpoint)
         print(f"Supervised model saved to: {supervised_model_path}")
     else:
         supervised_model_path = args.model_path
@@ -606,22 +630,15 @@ def main() -> None:
         val_questions=val_questions,
         test_questions=test_questions,
         pretrained_model_path=supervised_model_path,
+        write_checkpoint_sidecars=write_checkpoint_sidecars,
     )
 
-    # ``copy.deepcopy`` preserves tuples and other types that
-    # ``yaml.safe_load(yaml.safe_dump(...))`` would coerce to lists; the
-    # snapshot is solely to freeze a config object before mutating it.
-    resolved_config = copy.deepcopy(config)
-    resolved_config.setdefault("model", {})
-    resolved_config["model"]["device"] = flat_config["device"]
-    resolved_config["model"]["num_choices"] = flat_config["num_choices"]
-    save_json(trainer.checkpoint_dir / "config_used.json", resolved_config)
-    save_json(trainer.checkpoint_dir / "split_manifest.json", split_manifest)
+    best_checkpoint = _current_best_checkpoint(trainer)
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
     print("=" * 60)
-    print(f"Best PPO model saved to: {trainer.checkpoint_dir / 'best_model'}")
+    print(f"Best PPO model saved to: {best_checkpoint}")
     print(f"Training history: {trainer.checkpoint_dir / 'history.json'}")
 
 

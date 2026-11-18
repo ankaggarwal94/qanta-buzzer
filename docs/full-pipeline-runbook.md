@@ -442,7 +442,13 @@ python scripts/train_t5_policy.py \
 **Expected behavior:**
 1. Supervised warm-start: trains answer selection on complete questions (10 epochs)
 2. PPO fine-tuning: optimizes wait/answer policy on incremental episodes (100 iterations)
-3. Saves best model to `checkpoints/ppo_t5/best_model/`
+3. Saves the best model from this run to `checkpoints/ppo_t5/best_model/` and evaluates it on the test split.
+
+PPO validates at each configured interval and on its final iteration. Supervised
+training selects the first finite validation accuracy, including zero, and keeps
+the earliest checkpoint on a tie. Each new checkpoint directory contains its own
+`config_used.json` and `split_manifest.json`. Simultaneous CLI runs need distinct
+`supervised.checkpoint_dir` values because the two training phases share that output root.
 
 **Estimated time:** t5-base ~2–3 hrs on M3 Max MPS; t5-large ~6–8 hrs on CUDA
 
