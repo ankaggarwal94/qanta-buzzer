@@ -117,13 +117,14 @@ def _check_saved_split_paths(checkpoint_path: str | Path, directory: Path) -> No
 def _resolve_manifest_questions(
     checkpoint_path: str | Path,
     split_name: str,
-    all_questions: list | None = None,
+    all_questions: list,
+    data_dir: Path,
 ) -> list | None:
-    """Load manifest-backed split questions in the recorded qid order.
+    """Resolve recorded IDs in order, including after moving the checkpoint.
 
-    Returns None for an unavailable manifest or split file. When a recorded
-    source can be read, ambiguous or missing IDs raise ValueError.
-    Callers should fall back to sibling dataset files or random splitting.
+    Use the recorded split file if available. A moved persisted split can be
+    supplied beside the evaluation dataset, or replayed from the combined pool.
+    Legacy manifests without recorded IDs retain the caller's fallback.
     """
     manifest, manifest_path, manifest_error = load_checkpoint_sidecar(
         checkpoint_path, "split_manifest.json"
@@ -140,21 +141,11 @@ def _resolve_manifest_questions(
     split_path = manifest.get(f"{split_name}_path")
     qids = manifest.get(f"{split_name}_qids")
     combined_manifest = manifest.get("source") == "random_split_fallback" and not split_path
-    if combined_manifest and all_questions is not None:
-        if not isinstance(qids, list):
+    if not isinstance(qids, list):
+        if combined_manifest:
             raise ValueError(f"Combined split manifest is missing {split_name}_qids")
-        questions = all_questions
-    else:
-        if not split_path or not isinstance(qids, list):
-            print(f"Warning: split manifest does not identify the {split_name} dataset.")
-            return None
-        path = Path(split_path)
-        if not path.is_absolute():
-            path = manifest_path.parent / path
-        if not path.exists():
-            print(f"Warning: manifest-backed {split_name} file does not exist at {path}.")
-            return None
-        questions = None
+        print(f"Warning: split manifest does not identify the {split_name} cohort.")
+        return None
 
     if len(qids) == 0:
         print(
@@ -164,8 +155,13 @@ def _resolve_manifest_questions(
         )
         return None
 
-    if questions is None:
-        questions = load_mc_questions(path)
+    questions = all_questions
+    if not combined_manifest:
+        path = manifest_path.parent / split_path if split_path else None
+        if path is None or not path.is_file():
+            path = data_dir / f"{split_name}_dataset.json"
+        if path.is_file():
+            questions = load_mc_questions(path)
     qid_to_question = {q.qid: q for q in questions}
     if len(qid_to_question) != len(questions) or len(set(qids)) != len(qids):
         raise ValueError(f"Ambiguous or repeated question IDs in recorded {split_name} dataset")
@@ -181,7 +177,9 @@ def resolve_t5_test_questions(
     mc_path: Path,
 ) -> tuple[list, str]:
     """Resolve the T5-held-out test set, preferring checkpoint provenance."""
-    manifest_questions = _resolve_manifest_questions(checkpoint_path, "test", all_questions)
+    manifest_questions = _resolve_manifest_questions(
+        checkpoint_path, "test", all_questions, mc_path.parent
+    )
     if manifest_questions is not None:
         return manifest_questions, "split_manifest"
 
@@ -237,14 +235,18 @@ def resolve_t5_reference_questions(
     held_out = {}
     if test_questions is not None:
         held_out["test"] = test_questions
-    validation = _resolve_manifest_questions(checkpoint_path, "val", all_questions)
+    validation = _resolve_manifest_questions(
+        checkpoint_path, "val", all_questions, mc_path.parent
+    )
     val_path = mc_path.parent / "val_dataset.json"
     if validation is None and val_path.is_file():
         validation = load_mc_questions(val_path)
     if validation is not None:
         held_out["val"] = validation
 
-    manifest_questions = _resolve_manifest_questions(checkpoint_path, "train", all_questions)
+    manifest_questions = _resolve_manifest_questions(
+        checkpoint_path, "train", all_questions, mc_path.parent
+    )
     if manifest_questions is not None:
         if held_out:
             validate_question_splits(train=manifest_questions, **held_out)

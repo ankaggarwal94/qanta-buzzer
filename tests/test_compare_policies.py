@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.compare_policies import (
     resolve_mlp_eval_config,
     resolve_t5_reference_questions,
@@ -390,3 +392,50 @@ def test_evaluate_mlp_policy_passes_reference_questions_to_builder(monkeypatch):
     assert captured["builder_corpus"] is reference_questions
     assert result["reference_source"] == "sibling_train_dataset"
     assert result["test_set_source"] == "sibling_test_dataset"
+
+@pytest.mark.parametrize("moved_splits", [True, False])
+def test_relocated_persisted_checkpoint_replays_recorded_cohorts(
+    tmp_path, sample_mc_question, moved_splits
+):
+    from dataclasses import asdict, replace
+
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    dataset = tmp_path / "moved"
+    dataset.mkdir()
+    mc_path = dataset / "mc_dataset.json"
+    groups = {
+        role: [
+            replace(sample_mc_question, qid=f"{role}-{i}", question=f"Clue {role} {i}")
+            for i in range(3)
+        ]
+        for role in ("train", "val", "test")
+    }
+    pool = [q for rows in groups.values() for q in rows]
+    manifest = {"source": "persisted_artifacts"}
+    for role, rows in groups.items():
+        manifest[f"{role}_qids"] = [rows[2].qid, rows[0].qid]
+        manifest[f"{role}_path"] = str(tmp_path / "old" / f"{role}_dataset.json")
+        if moved_splits:
+            (dataset / f"{role}_dataset.json").write_text(
+                json.dumps([asdict(q) for q in rows]), encoding="utf-8"
+            )
+    sidecar = checkpoint / "split_manifest.json"
+    sidecar.write_text(json.dumps(manifest), encoding="utf-8")
+
+    held_out, test_source = resolve_t5_test_questions(checkpoint, pool, mc_path)
+    reference, train_source = resolve_t5_reference_questions(
+        checkpoint, pool, mc_path, held_out
+    )
+    assert [q.qid for q in held_out] == manifest["test_qids"]
+    assert [q.qid for q in reference] == manifest["train_qids"]
+    assert test_source == train_source == "split_manifest"
+
+    for role in groups:
+        missing = {**manifest, f"{role}_qids": ["not-in-this-source"]}
+        sidecar.write_text(json.dumps(missing), encoding="utf-8")
+        with pytest.raises(ValueError, match=f"Recorded {role} dataset is missing"):
+            if role == "test":
+                resolve_t5_test_questions(checkpoint, pool, mc_path)
+            else:
+                resolve_t5_reference_questions(checkpoint, pool, mc_path, held_out)
