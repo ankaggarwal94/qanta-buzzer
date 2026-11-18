@@ -215,6 +215,32 @@ def test_intake_reconciles_members_and_hashes(bundle, tmp_path, change):
     refuse_pull(bundle, tmp_path / "intake", message)
 
 
+@pytest.mark.parametrize("change", ["manifest", "additional_file"])
+def test_pull_rechecks_synced_bundle_before_publishing(
+    bundle, tmp_path, monkeypatch, change
+):
+    copy_file = exchange._copy_file_hashed
+
+    def copy_then_sync(src, dest):
+        result = copy_file(src, dest)
+        if src == bundle / "z.bin":
+            if change == "manifest":
+                path = bundle / MANIFEST
+                manifest = json.loads(path.read_bytes())
+                manifest["provenance"]["retry"] += 1
+                path.write_bytes(exchange.schema.encode_json(manifest))
+            else:
+                (bundle / "arrived.txt").write_text("just synced", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(exchange, "_copy_file_hashed", copy_then_sync)
+    intake = tmp_path / "intake"
+    with pytest.raises(exchange.ExchangeError, match="changed during pull"):
+        exchange.pull_verified(bundle, intake)
+    assert not intake.exists()
+    assert not list(tmp_path.glob("intake.pulling-*"))
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [

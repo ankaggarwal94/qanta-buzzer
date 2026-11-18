@@ -145,9 +145,10 @@ local destination outside the repository.
 python -m reproducibility.colm_aims_2026.phase4_exchange pull ../exchange/retry1 ../intake/retry1
 ```
 
-Pull verifies the bytes it copies against the manifest before it publishes the
-intake directory. A missing member, an extra file, or a digest mismatch causes
-a nonzero exit. Retry after sync finishes. The payload consists of files and
+Pull verifies each copied file against the manifest. Immediately before publishing
+the intake directory, it checks the file list and manifest bytes again. A changed
+manifest, missing member, extra file, or digest mismatch causes a nonzero exit.
+Retry after sync finishes. The payload consists of files and
 their relative paths. Empty directories, filesystem metadata, and the transport
 manifest are omitted from the intake. A successful pull establishes agreement
 with the supplied manifest. Use the run's certificate or evidence verifier for

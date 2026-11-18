@@ -282,10 +282,9 @@ def pull_verified(exchange_dir: Path, local_dest: Path) -> dict[str, Any]:
     if schema.resolves_inside(local_dest, exchange_dir):
         raise ExchangeError("local destination is inside the published bundle")
     _require_new(local_dest)
+    manifest_path = exchange_dir / MANIFEST_NAME
     try:
-        data = schema.read_regular_file_bytes(
-            exchange_dir / MANIFEST_NAME, tree_root=exchange_dir
-        )
+        data = schema.read_regular_file_bytes(manifest_path, tree_root=exchange_dir)
         manifest = schema.parse_json_bytes_strict(data)
     except (schema.ColmAimsError, ValueError) as exc:
         raise ExchangeError(f"cannot read {MANIFEST_NAME}: {exc}") from exc
@@ -311,6 +310,16 @@ def pull_verified(exchange_dir: Path, local_dest: Path) -> dict[str, Any]:
                 raise ExchangeError(
                     f"{path}: expected sha256 {entry['sha256']}, observed {digest}"
                 )
+        if _members(exchange_dir) != files | {MANIFEST_NAME}:
+            raise ExchangeError("bundle file list changed during pull")
+        try:
+            latest = schema.read_regular_file_bytes(
+                manifest_path, tree_root=exchange_dir
+            )
+        except schema.ColmAimsError as exc:
+            raise ExchangeError(f"cannot recheck {MANIFEST_NAME}: {exc}") from exc
+        if latest != data:
+            raise ExchangeError(f"{MANIFEST_NAME} changed during pull")
         _publish_dir(staged, local_dest)
     return {
         "verdict": "PULLED",
