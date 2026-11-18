@@ -676,6 +676,8 @@ def _load_dataframes(
         eval_split=args.eval_split,
     )
     data_dir = Path(args.data_dir)
+    from qb_data.data_audit import require_clean_split_directory
+    require_clean_split_directory(data_dir)
     mc_path = data_dir / "mc_dataset.json"
     fit_path = data_dir / f"{args.fit_split}_dataset.json"
     eval_path = data_dir / f"{args.eval_split}_dataset.json"

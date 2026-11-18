@@ -533,6 +533,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     # Load data
     # ========================================================================
+    from qb_data.data_audit import require_clean_split_directory
+    try:
+        require_clean_split_directory(data_dir)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     print("[CALI] Loading datasets...", flush=True)
 
     mc_path = data_dir / "mc_dataset.json"

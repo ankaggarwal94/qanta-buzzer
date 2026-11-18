@@ -178,7 +178,7 @@ def test_resolve_t5_reference_questions_prefers_split_manifest(tmp_path, monkeyp
 
 
 def _fake_q(qid: str):
-    return type("Q", (), {"qid": qid})()
+    return type("Q", (), {"qid": qid, "question": f"Question {qid}", "answer_primary": "Hydrogen"})()
 
 
 def test_resolve_t5_reference_questions_combined_fallback_subtracts_test_qids(tmp_path):

@@ -64,6 +64,8 @@ from evaluation.metrics import (
     summarize_buzz_metrics,
     system_score,
 )
+from qb_data.data_audit import require_clean_split_directory, validate_question_splits
+from qb_data.dataset_splits import normalize_question_text
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -98,17 +100,32 @@ def resolve_mlp_eval_config(
     return fallback_config
 
 
+def _check_saved_split_paths(checkpoint_path: str | Path, directory: Path) -> None:
+    """Audit complete persisted files before selecting a checkpoint's recorded subset."""
+    manifest, sidecar, _ = load_checkpoint_sidecar(checkpoint_path, "split_manifest.json")
+    selected = {}
+    if isinstance(manifest, dict) and sidecar is not None:
+        for split in ("train", "val", "test"):
+            location = manifest.get(f"{split}_path")
+            if location:
+                path = sidecar.parent / location
+                if path.is_file():
+                    selected[split] = path
+    require_clean_split_directory(directory, **selected)
+
+
 def _resolve_manifest_questions(
     checkpoint_path: str | Path,
     split_name: str,
+    all_questions: list | None = None,
 ) -> list | None:
     """Load manifest-backed split questions in the recorded qid order.
 
-    Returns None (with a printed warning) for any error — missing file,
-    corrupt JSON, incomplete fields, or missing split data on disk.
+    Returns None for an unavailable manifest or split file. When a recorded
+    source can be read, ambiguous or missing IDs raise ValueError.
     Callers should fall back to sibling dataset files or random splitting.
     """
-    manifest, _, manifest_error = load_checkpoint_sidecar(
+    manifest, manifest_path, manifest_error = load_checkpoint_sidecar(
         checkpoint_path, "split_manifest.json"
     )
     if manifest_error:
@@ -122,24 +139,22 @@ def _resolve_manifest_questions(
 
     split_path = manifest.get(f"{split_name}_path")
     qids = manifest.get(f"{split_name}_qids")
-    if not split_path or not isinstance(qids, list):
-        print(
-            f"Warning: split_manifest.json is missing {split_name}_path or "
-            f"{split_name}_qids; falling back to other resolution."
-        )
-        return None
-
-    path = Path(split_path)
-    if not path.is_absolute():
-        cp = Path(checkpoint_path).resolve()
-        manifest_dir = cp if cp.is_dir() else cp.parent
-        path = manifest_dir / path
-    if not path.exists():
-        print(
-            f"Warning: manifest-backed {split_name} split does not exist at "
-            f"{path}; falling back to other resolution."
-        )
-        return None
+    combined_manifest = manifest.get("source") == "random_split_fallback" and not split_path
+    if combined_manifest and all_questions is not None:
+        if not isinstance(qids, list):
+            raise ValueError(f"Combined split manifest is missing {split_name}_qids")
+        questions = all_questions
+    else:
+        if not split_path or not isinstance(qids, list):
+            print(f"Warning: split manifest does not identify the {split_name} dataset.")
+            return None
+        path = Path(split_path)
+        if not path.is_absolute():
+            path = manifest_path.parent / path
+        if not path.exists():
+            print(f"Warning: manifest-backed {split_name} file does not exist at {path}.")
+            return None
+        questions = None
 
     if len(qids) == 0:
         print(
@@ -149,15 +164,14 @@ def _resolve_manifest_questions(
         )
         return None
 
-    questions = load_mc_questions(path)
+    if questions is None:
+        questions = load_mc_questions(path)
     qid_to_question = {q.qid: q for q in questions}
+    if len(qid_to_question) != len(questions) or len(set(qids)) != len(qids):
+        raise ValueError(f"Ambiguous or repeated question IDs in recorded {split_name} dataset")
     missing_qids = [qid for qid in qids if qid not in qid_to_question]
     if missing_qids:
-        print(
-            f"Warning: manifest-backed {split_name} split at {path} is "
-            f"missing {len(missing_qids)} recorded qids; falling back."
-        )
-        return None
+        raise ValueError(f"Recorded {split_name} dataset is missing {len(missing_qids)} question IDs")
     return [qid_to_question[qid] for qid in qids]
 
 
@@ -167,7 +181,7 @@ def resolve_t5_test_questions(
     mc_path: Path,
 ) -> tuple[list, str]:
     """Resolve the T5-held-out test set, preferring checkpoint provenance."""
-    manifest_questions = _resolve_manifest_questions(checkpoint_path, "test")
+    manifest_questions = _resolve_manifest_questions(checkpoint_path, "test", all_questions)
     if manifest_questions is not None:
         return manifest_questions, "split_manifest"
 
@@ -192,8 +206,8 @@ def resolve_t5_reference_questions(
 ) -> tuple[list, str]:
     """Resolve the train-side reference set for T5 env reward helpers.
 
-    When falling back to the combined dataset, any qids overlapping
-    ``test_questions`` are subtracted so the env reward likelihood is
+    When falling back to the combined dataset, held-out IDs and normalized
+    clue texts are excluded so the env reward likelihood is
     not built from evaluation profiles. If the filter would leave the
     reference set empty, a ``ValueError`` is raised so contaminated
     metrics cannot be silently emitted.
@@ -220,14 +234,28 @@ def resolve_t5_reference_questions(
         ``"combined_dataset_fallback"`` (only when ``test_questions``
         was not provided).
     """
-    manifest_questions = _resolve_manifest_questions(checkpoint_path, "train")
+    held_out = {}
+    if test_questions is not None:
+        held_out["test"] = test_questions
+    validation = _resolve_manifest_questions(checkpoint_path, "val", all_questions)
+    val_path = mc_path.parent / "val_dataset.json"
+    if validation is None and val_path.is_file():
+        validation = load_mc_questions(val_path)
+    if validation is not None:
+        held_out["val"] = validation
+
+    manifest_questions = _resolve_manifest_questions(checkpoint_path, "train", all_questions)
     if manifest_questions is not None:
+        if held_out:
+            validate_question_splits(train=manifest_questions, **held_out)
         return manifest_questions, "split_manifest"
 
     train_split_path = mc_path.parent / "train_dataset.json"
     if train_split_path.exists():
         sibling_questions = load_mc_questions(train_split_path)
         if sibling_questions:
+            if held_out:
+                validate_question_splits(train=sibling_questions, **held_out)
             return sibling_questions, "sibling_train_dataset"
         # Empty sibling file silently fell through to the fallback
         # branches before; surface the cause loudly so the caller can
@@ -253,14 +281,12 @@ def resolve_t5_reference_questions(
         )
         return all_questions, "combined_dataset_fallback"
 
-    test_qids = {q.qid for q in test_questions}
-    excluded_qids: set[str] = set(test_qids)
-    val_split_path = mc_path.parent / "val_dataset.json"
-    if val_split_path.exists():
-        val_questions = load_mc_questions(val_split_path)
-        if val_questions:
-            excluded_qids.update(q.qid for q in val_questions)
-    filtered = [q for q in all_questions if q.qid not in excluded_qids]
+    excluded_qids = {q.qid for rows in held_out.values() for q in rows}
+    excluded_text = {normalize_question_text(q.question) for rows in held_out.values() for q in rows}
+    filtered = [
+        q for q in all_questions
+        if q.qid not in excluded_qids and normalize_question_text(q.question) not in excluded_text
+    ]
     if not filtered:
         raise ValueError(
             "Cannot resolve T5 reward reference: split_manifest.json and "
@@ -269,13 +295,13 @@ def resolve_t5_reference_questions(
             "questions. Provide a checkpoint with split_manifest.json or "
             "build train_dataset.json next to the combined artifact."
         )
+    validate_question_splits(reference=filtered, **held_out)
     print(
         "WARNING: resolve_t5_reference_questions falling back to combined "
-        f"dataset minus held-out qids; "
+        f"dataset minus held-out questions; "
         f"{len(all_questions) - len(filtered)} of "
         f"{len(all_questions)} questions were excluded "
-        f"(test={len(test_qids)}, "
-        f"val={len(excluded_qids) - len(test_qids)}) to prevent leakage "
+        f"by ID or normalized clue text to prevent leakage "
         "into the env reward helper."
     )
     return filtered, "combined_dataset_minus_test_fallback"
@@ -733,6 +759,7 @@ def main() -> None:
             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
             sys.exit(1)
 
+    _check_saved_split_paths(args.t5_checkpoint, mc_path.parent)
     print(f"Loading questions from: {mc_path}")
     all_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(all_questions)} questions")

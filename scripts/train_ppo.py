@@ -33,6 +33,7 @@ from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
 from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config, precompute_beliefs
 from qb_data.config import merge_overrides
+from qb_data.data_audit import require_clean_split_directory
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -133,6 +134,7 @@ def main() -> None:
     if train_warning:
         print(train_warning)
 
+    require_clean_split_directory(train_path.parent, train=train_path)
     print(f"Loading training MC questions from: {train_path}")
     train_questions = load_mc_questions(train_path)
     if not train_questions:

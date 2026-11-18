@@ -988,6 +988,8 @@ def _load_eval_dataframe(
     from scripts.stopdff_dp.adapter import build_dataframe
 
     data_dir = _resolve_path(args.data_dir)
+    from qb_data.data_audit import require_clean_split_directory
+    require_clean_split_directory(data_dir)
     mc_path = data_dir / "mc_dataset.json"
     eval_path = data_dir / f"{args.eval_split}_dataset.json"
     for path in (mc_path, eval_path):

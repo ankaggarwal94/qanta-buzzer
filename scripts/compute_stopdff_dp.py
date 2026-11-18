@@ -108,6 +108,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             return 1
 
+    from qb_data.data_audit import require_clean_split_directory
+    try:
+        require_clean_split_directory(data_dir)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     # Load split datasets.
     mc_path = data_dir / "mc_dataset.json"
     fit_path = data_dir / f"{args.fit_split}_dataset.json"

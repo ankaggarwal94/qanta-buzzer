@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import yaml
 
 from qb_data.config import merge_overrides
+from qb_data.data_audit import require_clean_split_directory
 from scripts._common import (
     ARTIFACT_DIR,
     PROCESSED_DIR,
@@ -254,6 +255,7 @@ def load_questions(
                 print(f"  {c}")
             sys.exit(1)
 
+    require_clean_split_directory(mc_path.parent)
     print(f"Loading MC questions from: {mc_path}")
     questions = load_mc_questions(mc_path)
     print(f"Loaded {len(questions)} questions")
@@ -386,7 +388,7 @@ def load_question_splits_with_metadata(
     2. Otherwise search the standard artifact directories, preferring the
        smoke directory in smoke mode and the main directory otherwise.
     3. Fall back to loading a combined ``mc_dataset.json`` and performing the
-       legacy in-memory random split.
+       seeded in-memory split grouped by normalized clue text.
     """
     if args.mc_path:
         candidate_dirs = [Path(args.mc_path).parent]
@@ -419,6 +421,7 @@ def load_question_splits_with_metadata(
         split_paths = resolve_persisted_split_paths(base_dir)
         if split_paths is None:
             continue
+        require_clean_split_directory(base_dir)
         train_questions = load_mc_questions(split_paths["train"])
         if not train_questions:
             print(
@@ -530,27 +533,15 @@ def split_questions(questions: list, config: dict) -> tuple:
     tuple[list, list, list]
         Train, validation, and test question lists.
     """
-    import random
+    from qb_data.dataset_splits import create_stratified_splits
 
     data = config.get("data", {})
-    seed = data.get("seed", data.get("shuffle_seed", 42))
     train_size = data.get("train_size", data.get("train_ratio", 0.7))
     val_size = data.get("val_size", data.get("val_ratio", 0.15))
-
-    rng = random.Random(seed)
-    shuffled = questions[:]
-    rng.shuffle(shuffled)
-
-    n = len(shuffled)
-    n_train = int(n * train_size)
-    n_val = int(n * val_size)
-
-    train_questions = shuffled[:n_train]
-    val_questions = shuffled[n_train : n_train + n_val]
-    test_questions = shuffled[n_train + n_val :]
-
-    print(f"Split: {len(train_questions)} train, {len(val_questions)} val, {len(test_questions)} test")
-    return train_questions, val_questions, test_questions
+    return create_stratified_splits(
+        questions, ratios=[train_size, val_size, 1.0 - (train_size + val_size)],
+        seed=data.get("seed", data.get("shuffle_seed", 42)),
+    )
 
 
 def main() -> None:
