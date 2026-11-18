@@ -706,11 +706,10 @@ def _load_questions_for_training(
     allow_incomplete_mc_coverage: bool,
     allow_low_mc_retention: bool,
 ) -> tuple[list[dict[str, Any]], set[str], set[str], dict[str, Any]]:
+    from qb_data.data_audit import require_metric_splits
     train_path = data_dir / f"{train_split}_dataset.json"
     val_path = data_dir / f"{val_split}_dataset.json"
-    for path in (train_path, val_path):
-        if not path.exists():
-            raise FileNotFoundError(f"missing dataset {path}")
+    require_metric_splits(data_dir, train=train_path, val=val_path)
 
     train_questions = iter_split_questions(load_json(train_path), source_path=train_path)
     val_questions = iter_split_questions(load_json(val_path), source_path=val_path)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from argparse import Namespace
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -113,6 +115,31 @@ def test_load_question_splits_falls_back_to_random_split(monkeypatch) -> None:
     assert train_questions == ["combined", "train"]
     assert val_questions == ["val"]
     assert test_questions == ["test"]
+
+
+@pytest.mark.parametrize(
+    ("count", "ratios", "expected_counts"),
+    [
+        (4, {}, "train=3, val=0, test=1"),
+        (4, {"train_size": 0.5, "val_size": 0.4}, "train=2, val=2, test=0"),
+        (2, {}, "train=2, val=0, test=0"),
+        (4, {"train_size": 0.1, "val_size": 0.5}, "train=0, val=2, test=2"),
+    ],
+)
+def test_combined_fallback_requires_populated_cohorts(
+    tmp_path, sample_mc_question, count, ratios, expected_counts
+):
+    row = asdict(sample_mc_question)
+    combined = tmp_path / "mc_dataset.json"
+    combined.write_text(json.dumps([
+        {**row, "qid": str(i), "question": f"Distinct clue {i}"} for i in range(16)
+    ]), encoding="utf-8")
+    args = Namespace(mc_path=str(combined), smoke=False)
+
+    with pytest.raises(ValueError, match=expected_counts):
+        train_t5_policy.load_question_splits_with_metadata(
+            args, {"data": {"max_questions": count, **ratios}}
+        )
 
 
 def test_main_writes_t5_config_and_split_manifest(

@@ -65,6 +65,7 @@ from qb_data.config import baseline_reward_options, merge_overrides
 from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config
 from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
+from qb_data.data_audit import require_clean_split_directory, validate_question_splits
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -79,7 +80,6 @@ from scripts._common import (
     redirect_combined_to_split,
     resolve_default_dataset_path,
     save_json,
-    split_name_from_path,
 )
 
 
@@ -213,6 +213,7 @@ def main() -> None:
         if warning:
             print(warning)
 
+    require_clean_split_directory(mc_path.parent, test=mc_path)
     print(f"Loading MC questions from: {mc_path}")
     mc_questions = load_mc_questions(mc_path)
     if not mc_questions and not args.mc_path:
@@ -486,13 +487,17 @@ def main() -> None:
         if recorded_ref_path:
             ref_path = Path(recorded_ref_path)
             if not ref_path.is_absolute():
-                ref_path = ppo_checkpoint_path.parent / ref_path
+                repo_path = PROJECT_ROOT / ref_path
+                ref_path = repo_path if repo_path.is_file() else ppo_checkpoint_path.parent / ref_path
             if ref_path.exists():
                 ppo_ref_questions = _safe_load(
                     ref_path, context="evaluate_all PPO replay (recorded ref)"
                 )
                 if ppo_ref_questions:
                     ref_split = run_metadata.get("likelihood_reference_split", "recorded")
+                    same_source = ref_path.resolve() == mc_path.resolve()
+                    if eval_split in {"test", "val", "explicit"} and (ref_split == "train" or not same_source):
+                        validate_question_splits(reference=ppo_ref_questions, evaluation=mc_questions)
                     print(
                         f"  PPO likelihood built from recorded {ref_split} "
                         f"corpus ({len(ppo_ref_questions)} questions)"

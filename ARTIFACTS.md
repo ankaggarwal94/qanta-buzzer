@@ -40,7 +40,9 @@ preregistered artifact.
 
 ## Regeneration order
 
-Run source metric scripts first, then regenerate aggregate artifacts:
+For a new dataset, run the source metric through `python scripts/run_audited_metric.py <metric>` to check the selected split files before scoring. [Data audit commands](docs/data-audit.md)
+
+For the frozen release, run its recorded source metric scripts first, then regenerate aggregate artifacts:
 
 ```bash
 python scripts/compute_csli.py \

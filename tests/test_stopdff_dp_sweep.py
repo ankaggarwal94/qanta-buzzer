@@ -12,7 +12,7 @@ def _fake_mc_question(qid: str, gold_text: str = "George Washington") -> dict:
     category = "History" if qid.endswith("0") else "Literature"
     return {
         "qid": qid,
-        "question": "Who was the first president of the United States?",
+        "question": f"Who was the first president of the United States? ({qid})",
         "tokens": ["Who", "was", "the", "first", "president"],
         "answer_primary": gold_text,
         "clean_answers": [gold_text],
@@ -520,7 +520,7 @@ def _fake_mc_question_for_sweep(qid: str) -> dict:
     """Minimal MC question for sweep gate tests."""
     return {
         "qid": qid,
-        "question": "What is the question?",
+        "question": f"What is the answer to question {qid}?",
         "tokens": ["What", "is", "the", "question"],
         "answer_primary": "answer",
         "clean_answers": ["answer"],

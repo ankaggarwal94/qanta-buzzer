@@ -45,6 +45,7 @@ from agents.threshold_buzzer import (
 )
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
 from qb_data.config import baseline_reward_options, merge_overrides
+from qb_data.data_audit import require_clean_split_directory
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -153,6 +154,7 @@ def main() -> None:
         if warning:
             print(warning)
 
+    require_clean_split_directory(mc_path.parent, val=mc_path)
     print(f"Loading MC questions from: {mc_path}")
     mc_questions = load_mc_questions(mc_path)
     if not mc_questions and not args.mc_path:

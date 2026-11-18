@@ -484,7 +484,7 @@ def _fake_mc_question(qid: str, gold_text: str = "George Washington") -> dict:
     """Synthesize the minimum MC question dict the adapter expects."""
     return {
         "qid": qid,
-        "question": "Who was the first president of the United States?",
+        "question": f"Who was the first president of the United States? ({qid})",
         "tokens": ["Who", "was", "the", "first", "president"],
         "answer_primary": gold_text,
         "clean_answers": [gold_text],

@@ -26,6 +26,7 @@ def _checkpoint(
     path: Path,
     *,
     producer_provenance: dict[str, object] | None = None,
+    training: dict[str, str] | None = None,
     git_sha: str = "b" * 40,
     git_dirty: bool = False,
 ) -> None:
@@ -35,7 +36,7 @@ def _checkpoint(
     torch.save(
         {
             "state_dict": model.state_dict(),
-            "config": model.to_config(),
+            "config": model.to_config() | ({"training": training} if training is not None else {}),
             "feature_schema": {
                 "feature_names": ["prefix_idx"],
                 "numeric_columns": ["prefix_idx"],
@@ -75,7 +76,9 @@ def test_ensemble_metadata_binds_exact_checkpoint_bytes(
     )
     monkeypatch.setattr(learned, "_current_git_commit", lambda: "b" * 40)
     checkpoint = tmp_path / "best.ckpt"
-    _checkpoint(checkpoint)
+    _checkpoint(checkpoint, training={
+        "data_dir": "local-dataset", "train_split": "fold_a", "val_split": "fold_b",
+    })
 
     _models, _schema, _scaler, metadata = learned._load_ensemble(
         checkpoint,
@@ -83,6 +86,7 @@ def test_ensemble_metadata_binds_exact_checkpoint_bytes(
         reward_override=None,
     )
 
+    assert metadata["training_partitions"] == [("local-dataset", "fold_a", "fold_b")]
     assert metadata["checkpoint_sha256s"] == {
         str(checkpoint): sha256_file(checkpoint)
     }

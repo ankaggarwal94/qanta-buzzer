@@ -676,9 +676,11 @@ def _load_dataframes(
         eval_split=args.eval_split,
     )
     data_dir = Path(args.data_dir)
+    from qb_data.data_audit import require_metric_splits
     mc_path = data_dir / "mc_dataset.json"
     fit_path = data_dir / f"{args.fit_split}_dataset.json"
     eval_path = data_dir / f"{args.eval_split}_dataset.json"
+    require_metric_splits(data_dir, val=fit_path, test=eval_path)
     for path in (mc_path, fit_path, eval_path):
         if not path.exists():
             raise FileNotFoundError(f"missing dataset {path}")
