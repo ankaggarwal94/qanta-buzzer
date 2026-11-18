@@ -77,6 +77,25 @@ class MCQuestion(TossupQuestion):
         self.human_buzz_positions = restored
 
 
+def validate_reveal_grid(question: MCQuestion) -> None:
+    """Check stored prefix text against the inclusive token boundaries used by the loader."""
+    indices = question.run_indices
+    prefixes = question.cumulative_prefixes
+    if list(question.tokens) != question.question.split():
+        raise ValueError(f"{question.qid}: reveal tokens differ from the source question")
+    if not indices or len(indices) != len(prefixes):
+        raise ValueError(f"{question.qid}: empty or misaligned reveal grid")
+    previous = -1
+    for index, text in zip(indices, prefixes, strict=True):
+        if (isinstance(index, bool) or not isinstance(index, (int, np.integer))
+                or not 0 <= index < len(question.tokens) or index < previous):
+            raise ValueError(f"{question.qid}: invalid reveal boundary {index!r}")
+        expected = " ".join(question.tokens[:index + 1]).split()
+        if not expected or not isinstance(text, str) or text.split() != expected:
+            raise ValueError(f"{question.qid}: saved prefix differs from reveal at token {index}")
+        previous = index
+
+
 @dataclass
 class _RepairSearchBudget:
     """Independent scan- and transition-count ceilings for one repair."""

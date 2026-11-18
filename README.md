@@ -16,6 +16,8 @@ CS321M (AI Measurement Science) final project code repository. This project audi
 
 Built on the `qanta-buzzer` infrastructure developed for CS234 (Reinforcement Learning).
 
+For experiments with fitted stopping values, Double DQN, PPO, DPO, GRPO, imitation and prefix-supervised T5 answer selection, see the [stopping methods runbook](docs/stopping-methods.md).
+
 ## Environment Setup
 
 **Requirements:** Python 3.11+
