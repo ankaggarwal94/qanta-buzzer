@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -18,11 +19,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.ppo_buzzer import PPOBuzzer
 from models.likelihoods import TfIdfLikelihood
 from qb_data.config import merge_overrides
-from qb_data.data_audit import require_metric_splits
-from qb_data.mc_builder import validate_reveal_grid
+from qb_data.data_audit import validate_question_splits
+from qb_data.mc_builder import validate_gold_option, validate_reveal_grid
 from qb_env.tossup_env import make_env_from_config
 from scripts._common import (
-    build_likelihood_model, collect_env_texts, load_config, load_mc_questions,
+    build_likelihood_model, collect_env_texts, load_config, mc_questions_from_payload,
     parse_overrides, save_json,
 )
 from training.stopping_data import ReplayEnv, collect_episodes, evaluate_actions
@@ -121,8 +122,15 @@ def fit_method(name, episodes, validation, args, config, output):
 def run(args, output):
     config = merge_overrides(load_config(args.config), parse_overrides(args))
     paths = {s: args.data_dir / f"{s}_dataset.json" for s in ("train", "val", "test")}
-    require_metric_splits(args.data_dir, **paths)
-    questions = {s: load_mc_questions(path) for s, path in paths.items()}
+    questions, sources = {}, {}
+    for split, path in paths.items():
+        raw = path.read_bytes()
+        rows = mc_questions_from_payload(json.loads(raw), path)
+        if not rows:
+            raise ValueError(f"Empty {split} split")
+        questions[split] = rows
+        sources[split] = {"rows": len(rows), "sha256": hashlib.sha256(raw).hexdigest()}
+    validate_question_splits(**questions)
     likelihood = build_likelihood_model(config, questions["train"])
     env = make_env_from_config(questions["train"], likelihood, config)
     if env.reward_mode not in {"simple", "time_penalty", "expected_wins", "human_grounded"}:
@@ -131,11 +139,11 @@ def run(args, output):
     episodes = {}
     for split, rows in questions.items():
         for question in rows:
+            validate_gold_option(question)
             validate_reveal_grid(question)
             k = len(question.options)
             width = env.observation_space.shape[0] - 6
-            if not (2 <= k <= width and (env.variable_K or k == width)
-                    and 0 <= question.gold_index < k and len(question.option_profiles) == k):
+            if not (2 <= k <= width and (env.variable_K or k == width) and len(question.option_profiles) == k):
                 raise ValueError(f"Invalid menu for {question.qid} in {split}")
         episodes[split] = []
         # Dense TF-IDF vectors have vocabulary width. Discard each chunk after
@@ -170,8 +178,7 @@ def run(args, output):
     save_json(output / "run.json", {
         "methods": methods, "seed": args.seed, "epochs": args.epochs, "ppo_steps": args.ppo_steps,
         "discount": 1.0, "config": config, "results": results,
-        "data": {s: {"rows": len(episodes[s]), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-                 for s, path in paths.items()},
+        "data": sources,
     })
 
 

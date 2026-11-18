@@ -675,6 +675,9 @@ def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
     MCQuestion
         Reconstructed MCQuestion instance.
     """
+    gold = row["gold_index"]
+    if isinstance(gold, bool) or (isinstance(gold, float) and not gold.is_integer()):
+        raise ValueError(f"{row['qid']}: gold_index must be an integer slot")
     return MCQuestion(
         qid=row["qid"],
         question=row["question"],
@@ -686,7 +689,7 @@ def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
         category=row.get("category", ""),
         cumulative_prefixes=list(row["cumulative_prefixes"]),
         options=list(row["options"]),
-        gold_index=int(row["gold_index"]),
+        gold_index=int(gold),
         option_profiles=list(row["option_profiles"]),
         option_answer_primary=list(row["option_answer_primary"]),
         distractor_strategy=row.get("distractor_strategy", "unknown"),
@@ -740,7 +743,11 @@ def load_mc_questions(path: str | Path) -> list[MCQuestion]:
         the MC schema; re-raised with a producer-mismatch hint so
         the operator knows to run ``build_mc_dataset.py``.
     """
-    raw = load_json(path)
+    return mc_questions_from_payload(load_json(path), path)
+
+
+def mc_questions_from_payload(raw: Any, path: str | Path) -> list[MCQuestion]:
+    """Deserialize already-read split bytes after JSON decoding, retaining source diagnostics."""
     rows = iter_split_questions(raw, source_path=path)
     try:
         return [mc_question_from_dict(item) for item in rows]

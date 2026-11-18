@@ -77,6 +77,16 @@ class MCQuestion(TossupQuestion):
         self.human_buzz_positions = restored
 
 
+def validate_gold_option(question: MCQuestion) -> None:
+    """Bind the label to its source answer after the producer has shuffled the menu."""
+    i = question.gold_index
+    count = len(question.options)
+    if (isinstance(i, bool) or not isinstance(i, (int, np.integer)) or not 0 <= i < count
+            or len(question.option_answer_primary) != count
+            or question.option_answer_primary[i] != question.answer_primary):
+        raise ValueError(f"{question.qid}: gold_index does not identify the source answer")
+
+
 def validate_reveal_grid(question: MCQuestion) -> None:
     """Check stored prefix text against the inclusive token boundaries used by the loader."""
     indices = question.run_indices

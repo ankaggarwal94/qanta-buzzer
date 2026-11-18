@@ -39,7 +39,7 @@ def question(qid, prefixes, options, gold):
     text = prefixes[-1] + " secret"
     return replace(_make_question(qid), question=text, tokens=text.split(),
                    cumulative_prefixes=prefixes, run_indices=[len(s.split()) - 1 for s in prefixes],
-                   options=options, gold_index=gold, answer_primary=options[gold])
+                   options=options, option_answer_primary=options, gold_index=gold, answer_primary=options[gold])
 
 
 def test_prefix_training_and_validation_keep_visible_clues_and_active_choices(tmp_path):

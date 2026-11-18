@@ -2,8 +2,10 @@
 
 import numpy as np
 import pytest
+from dataclasses import asdict, replace
 
-from qb_data.mc_builder import validate_reveal_grid
+from qb_data.mc_builder import validate_gold_option, validate_reveal_grid
+from scripts._common import mc_question_from_dict
 from qb_env.stop_only_env import StopOnlyEnv
 from training.stopping_data import collect_episodes, evaluate_actions, ReplayEnv
 
@@ -65,3 +67,14 @@ def test_reveal_boundaries_are_bound_to_source_words(sample_mc_question):
     sample_mc_question.cumulative_prefixes = ["opening secret"]
     with pytest.raises(ValueError, match="source question"):
         validate_reveal_grid(sample_mc_question)
+
+
+@pytest.mark.parametrize("bad", [True, 0.5])
+def test_deserialization_rejects_lossy_gold_coercion(sample_mc_question, bad):
+    with pytest.raises(ValueError, match="gold_index"):
+        mc_question_from_dict({**asdict(sample_mc_question), "gold_index": bad})
+
+
+def test_shifted_menu_key_cannot_train_or_score(sample_mc_question):
+    with pytest.raises(ValueError, match="gold_index"):
+        validate_gold_option(replace(sample_mc_question, gold_index=1))

@@ -50,7 +50,7 @@ import torch.optim as optim
 
 from models.t5_policy import T5PolicyModel
 from qb_data.data_audit import validate_question_splits
-from qb_data.mc_builder import MCQuestion, validate_reveal_grid
+from qb_data.mc_builder import MCQuestion, validate_gold_option, validate_reveal_grid
 from training.checkpoints import exclusive_training_run, save_training_checkpoint, training_lock
 
 
@@ -199,9 +199,7 @@ class SupervisedTrainer:
             count = len(question.options)
             if not 1 <= count <= width:
                 raise ValueError(f"{question.qid}: menu size {count} exceeds the answer head or is empty")
-            index = question.gold_index
-            if isinstance(index, bool) or not isinstance(index, (int, np.integer)) or not 0 <= index < count:
-                raise ValueError(f"{question.qid}: gold_index must identify a displayed menu option")
+            validate_gold_option(question)
             validate_reveal_grid(question)
             # Repeated boundaries can differ in whitespace while exposing identical tokens.
             by_end = dict(zip(question.run_indices, question.cumulative_prefixes, strict=True))
